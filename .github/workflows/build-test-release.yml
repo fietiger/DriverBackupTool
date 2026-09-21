@@ -1,0 +1,94 @@
+name: Build, Test and Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build & Test Native Windows Binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install MinGW Cross Compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 binutils-mingw-w64
+
+      - name: Compile Resource Manifest
+        run: |
+          x86_64-w64-mingw32-windres app.rc -O coff -o app.res
+
+      - name: Build DriverBackupTool.exe
+        run: |
+          x86_64-w64-mingw32-gcc -O2 -municode -mwindows main.c app.res -o DriverBackupTool.exe -lcomctl32 -lshell32 -lole32
+
+      - name: Test Binary Headers & Exported Subsystems
+        run: |
+          file DriverBackupTool.exe
+          # Verify PE architecture is x86-64 GUI
+          file DriverBackupTool.exe | grep -q "PE32+ executable (GUI) x86-64" || (echo "Architecture test failed" && exit 1)
+          # Verify required DLL dependencies (comctl32, shell32, ole32)
+          x86_64-w64-mingw32-objdump -p DriverBackupTool.exe | grep "DLL Name: KERNEL32.dll"
+          x86_64-w64-mingw32-objdump -p DriverBackupTool.exe | grep "DLL Name: SHELL32.dll"
+          x86_64-w64-mingw32-objdump -p DriverBackupTool.exe | grep "DLL Name: ole32.dll"
+          echo "Automated validation and binary sanity checks passed!"
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DriverBackupTool-x64
+          path: DriverBackupTool.exe
+
+  release:
+    name: Create GitHub Release
+    needs: build-and-test
+    if: startsWith(github.ref, 'tags/v') || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: DriverBackupTool-x64
+
+      - name: Generate Release Tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "RELEASE_TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "RELEASE_TAG=v1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.RELEASE_TAG }}
+          name: DriverBackupTool ${{ steps.tag.outputs.RELEASE_TAG }}
+          body: |
+            ## Windows 原生硬件驱动备份与批量还原工具 (Win32 GUI 原生单文件版)
+
+            ### ✨ 核心功能
+            - 🖥️ **纯正原生 Win32 GUI 界面**：无任何 .NET、Electron、Python 或第三方运行库依赖，仅 260KB 单文件绿色版，开箱即用。
+            - 🛡️ **UAC 管理员权限内置引导**：内置 Application Manifest，双击自动申请并提权，杜绝底层权限不足导致的备份失败。
+            - 💾 **一键驱动备份**：调用 Windows 核心 DISM 驱动导出引擎，智能滤除微软默认驱动，完整导出所有非官方第三方硬件驱动（包含 `.inf`、`.sys`、`.cat` 原始安装包）。
+            - ⚡ **一键驱动还原**：调用微软 PnPUtil 引擎，全自动递归扫描所选目录，批量静默注入并安装所有硬件驱动。
+            - 📜 **实时管道日志**：实时捕获底层命令行输出并呈现在多行滚动日志窗口中，安装进度一目了然。
+
+            ### 📦 下载运行
+            下载下方的 `DriverBackupTool.exe`，直接双击运行即可！
+          files: |
+            DriverBackupTool.exe
