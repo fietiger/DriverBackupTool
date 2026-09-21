@@ -26,15 +26,16 @@ jobs:
         run: |
           x86_64-w64-mingw32-windres app.rc -O coff -o app.res
 
-      - name: Build DriverBackupTool.exe
+      - name: Build DriverBackupTool.exe and DriverTestCLI.exe
         run: |
           x86_64-w64-mingw32-gcc -O2 -municode -mwindows main.c app.res -o DriverBackupTool.exe -lcomctl32 -lshell32 -lole32 -lsetupapi -lcfgmgr32
+          x86_64-w64-mingw32-gcc -O2 -municode cli_main.c app.res -o DriverTestCLI.exe -lshell32 -lole32
 
       - name: Test Binary Headers & Exported Subsystems
         run: |
-          file DriverBackupTool.exe
-          # Verify PE architecture is x86-64 GUI
-          file DriverBackupTool.exe | grep -q "PE32+ executable (GUI) x86-64" || (echo "Architecture test failed" && exit 1)
+          file DriverBackupTool.exe DriverTestCLI.exe
+          file DriverBackupTool.exe | grep -q "PE32+ executable (GUI) x86-64" || exit 1
+          file DriverTestCLI.exe | grep -q "PE32+ executable (console) x86-64" || exit 1
           # Verify required DLL dependencies (comctl32, shell32, ole32)
           x86_64-w64-mingw32-objdump -p DriverBackupTool.exe | grep "DLL Name: KERNEL32.dll"
           x86_64-w64-mingw32-objdump -p DriverBackupTool.exe | grep "DLL Name: SHELL32.dll"
@@ -92,3 +93,4 @@ jobs:
             下载下方的 `DriverBackupTool.exe`，直接双击运行即可！
           files: |
             DriverBackupTool.exe
+            DriverTestCLI.exe
