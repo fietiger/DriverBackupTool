@@ -480,10 +480,13 @@ DWORD WINAPI BackupThread(LPVOID lpParam) {
 
     wchar_t cmd[2048];
     // Execute Driver Export using PnPUtil first, fallback to DISM
-    // pnputil /export-driver * <target_dir>
-    // PnPUtil is significantly faster, native, and has zero path colon/quote bugs!
+    // Do NOT put quotes around targetPath if there are no spaces! Windows 11 24H2 CLI parser treats quotes literally!
     AppendLog(L"调用 Windows 原生驱动导出引擎 (PnPUtil)...\r\n");
-    swprintf(cmd, 2048, L"pnputil.exe /export-driver * \"%s\"", params->targetPath);
+    if (wcschr(params->targetPath, L' ') != NULL) {
+        swprintf(cmd, 2048, L"pnputil.exe /export-driver * \"%s\"", params->targetPath);
+    } else {
+        swprintf(cmd, 2048, L"pnputil.exe /export-driver * %s", params->targetPath);
+    }
 
     DWORD ec = RunProcessWithPipe(cmd);
     if (ec != 0) {

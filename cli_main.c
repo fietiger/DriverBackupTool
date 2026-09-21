@@ -96,10 +96,17 @@ int wmain(int argc, wchar_t* argv[]) {
         wprintf(L"   [警告] 目录创建返回: 0x%08lx，将继续尝试导出...\r\n", hr);
     }
 
-    // Test PnPUtil Export
-    wprintf(L"\r\n2. 启动 PnPUtil 引擎测试导出驱动...\r\n");
+    // Ensure directory exists and is validated
+    SHCreateDirectoryExW(NULL, targetDir, NULL);
+
+    // Format PnPUtil command:
+    // Do NOT put quotes if there are no spaces! Windows 11 24H2 CLI parser treats quotes literally!
     wchar_t cmdPnp[2048];
-    swprintf(cmdPnp, 2048, L"pnputil.exe /export-driver * \"%s\"", targetDir);
+    if (wcschr(targetDir, L' ') != NULL) {
+        swprintf(cmdPnp, 2048, L"pnputil.exe /export-driver * \"%s\"", targetDir);
+    } else {
+        swprintf(cmdPnp, 2048, L"pnputil.exe /export-driver * %s", targetDir);
+    }
 
     DWORD ecPnp = RunCommand(cmdPnp);
     wprintf(L"\r\nPnPUtil 执行退出码: %lu\r\n", ecPnp);
