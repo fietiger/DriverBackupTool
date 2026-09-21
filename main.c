@@ -469,9 +469,26 @@ DWORD WINAPI BackupThread(LPVOID lpParam) {
     AppendLog(L"调用 Windows 原生 DISM 驱动导出引擎...\r\n");
     AppendLog(L"========================================\r\n");
 
-    CreateDirectoryW(params->targetPath, NULL);
+    // Strip trailing backslashes and spaces
+    int plen = wcslen(params->targetPath);
+    while (plen > 0 && (params->targetPath[plen - 1] == L' ' || params->targetPath[plen - 1] == L'\\')) {
+        params->targetPath[--plen] = L'\0';
+    }
+
+    // Recursively create directory
+    SHCreateDirectoryExW(NULL, params->targetPath, NULL);
+
     wchar_t cmd[2048];
-    swprintf(cmd, 2048, L"dism.exe /online /export-driver /destination:\"%s\"", params->targetPath);
+    // Crucial DISM fix:
+    // When quotes are placed after colon like /destination:"D:\XX", DISM's internal parser
+    // splits on the colon of "D:", causing it to parse the path as just "D"!
+    // If path contains no spaces, omit quotes entirely: /destination:D:\XX
+    // If path contains spaces, wrap the whole switch: "/destination:D:\My Path"
+    if (wcschr(params->targetPath, L' ') != NULL) {
+        swprintf(cmd, 2048, L"dism.exe /online /export-driver \"/destination:%s\"", params->targetPath);
+    } else {
+        swprintf(cmd, 2048, L"dism.exe /online /export-driver /destination:%s", params->targetPath);
+    }
 
     DWORD ec = RunProcessWithPipe(cmd);
     if (ec == 0) {
