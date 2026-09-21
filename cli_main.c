@@ -10,7 +10,7 @@
 
 // Simple console runner that executes a command via CreateProcess and pipes output to console
 DWORD RunCommand(const wchar_t* cmd) {
-    wprintf(L"\r\n[执行系统指令]: %s\r\n\r\n", cmd);
+    wprintf(L"\r\n[执行系统指令]: %ls\r\n\r\n", cmd);
 
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(SECURITY_ATTRIBUTES);
@@ -78,7 +78,7 @@ int wmain(int argc, wchar_t* argv[]) {
     if (argc >= 2) {
         wcsncpy(targetDir, argv[1], MAX_PATH - 1);
     } else {
-        wprintf(L"提示: 未传入参数，默认使用测试目标路径: %s\r\n", targetDir);
+        wprintf(L"提示: 未传入参数，默认使用测试目标路径: %ls\r\n", targetDir);
         wprintf(L"用法: DriverTestCLI.exe [目标路径，如 D:\\XX 或 D:\\Drivers]\r\n\r\n");
     }
 
@@ -88,7 +88,7 @@ int wmain(int argc, wchar_t* argv[]) {
         targetDir[--plen] = L'\0';
     }
 
-    wprintf(L"1. 正在创建目标目录: %s ...\r\n", targetDir);
+    wprintf(L"1. 正在创建目标目录: %ls ...\r\n", targetDir);
     HRESULT hr = SHCreateDirectoryExW(NULL, targetDir, NULL);
     if (SUCCEEDED(hr) || hr == ERROR_ALREADY_EXISTS) {
         wprintf(L"   [成功] 目标目录就绪。\r\n");
@@ -99,13 +99,15 @@ int wmain(int argc, wchar_t* argv[]) {
     // Ensure directory exists and is validated
     SHCreateDirectoryExW(NULL, targetDir, NULL);
 
-    // Format PnPUtil command:
-    // Do NOT put quotes if there are no spaces! Windows 11 24H2 CLI parser treats quotes literally!
+    // Format PnPUtil command.
+    // NOTE: %ls is mandatory for wchar_t* args in wide printf — plain %s is read
+    // as a narrow string by the MinGW/MSVCRT CRT, truncating paths at the first
+    // null byte (e.g. "C:\Drivers" becomes "C") and making pnputil/DISM fail.
     wchar_t cmdPnp[2048];
     if (wcschr(targetDir, L' ') != NULL) {
-        swprintf(cmdPnp, 2048, L"pnputil.exe /export-driver * \"%s\"", targetDir);
+        swprintf(cmdPnp, 2048, L"pnputil.exe /export-driver * \"%ls\"", targetDir);
     } else {
-        swprintf(cmdPnp, 2048, L"pnputil.exe /export-driver * %s", targetDir);
+        swprintf(cmdPnp, 2048, L"pnputil.exe /export-driver * %ls", targetDir);
     }
 
     DWORD ecPnp = RunCommand(cmdPnp);
@@ -113,15 +115,15 @@ int wmain(int argc, wchar_t* argv[]) {
 
     if (ecPnp == 0) {
         wprintf(L"\r\n========================================================\r\n");
-        wprintf(L"✅ [测试通过] PnPUtil 成功将全部第三方驱动导出到: %s\r\n", targetDir);
+        wprintf(L"✅ [测试通过] PnPUtil 成功将全部第三方驱动导出到: %ls\r\n", targetDir);
         wprintf(L"========================================================\r\n");
     } else {
         wprintf(L"\r\n⚠️ [PnPUtil 异常，尝试 DISM 备用引擎测试...]\r\n");
         wchar_t cmdDism[2048];
         if (wcschr(targetDir, L' ') != NULL) {
-            swprintf(cmdDism, 2048, L"dism.exe /online /export-driver \"/destination:%s\"", targetDir);
+            swprintf(cmdDism, 2048, L"dism.exe /online /export-driver \"/destination:%ls\"", targetDir);
         } else {
-            swprintf(cmdDism, 2048, L"dism.exe /online /export-driver /destination:%s", targetDir);
+            swprintf(cmdDism, 2048, L"dism.exe /online /export-driver /destination:%ls", targetDir);
         }
         DWORD ecDism = RunCommand(cmdDism);
         wprintf(L"\r\nDISM 执行退出码: %lu\r\n", ecDism);

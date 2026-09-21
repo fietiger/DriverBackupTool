@@ -309,7 +309,7 @@ bool InfContainsHardwareId(const wchar_t* infPath, const wchar_t* hwId) {
 
 bool SearchMatchingInf(const wchar_t* dir, const wchar_t* hwId, wchar_t* outInfPath) {
     wchar_t searchPath[MAX_PATH];
-    swprintf(searchPath, MAX_PATH, L"%s\\*.*", dir);
+    swprintf(searchPath, MAX_PATH, L"%ls\\*.*", dir);
 
     WIN32_FIND_DATAW fd;
     HANDLE hFind = FindFirstFileW(searchPath, &fd);
@@ -318,7 +318,7 @@ bool SearchMatchingInf(const wchar_t* dir, const wchar_t* hwId, wchar_t* outInfP
     do {
         if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
         wchar_t fullPath[MAX_PATH];
-        swprintf(fullPath, MAX_PATH, L"%s\\%s", dir, fd.cFileName);
+        swprintf(fullPath, MAX_PATH, L"%ls\\%ls", dir, fd.cFileName);
 
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if (SearchMatchingInf(fullPath, hwId, outInfPath)) {
@@ -426,7 +426,7 @@ DWORD WINAPI SmartInstallThread(LPVOID lpParam) {
             AppendLog(L"\r\n");
 
             wchar_t cmd[2048];
-            swprintf(cmd, 2048, L"pnputil.exe /add-driver \"%s\" /install", g_problemDevices[i].matchedInf);
+            swprintf(cmd, 2048, L"pnputil.exe /add-driver \"%ls\" /install", g_problemDevices[i].matchedInf);
             RunProcessWithPipe(cmd);
             installedCount++;
             Sleep(500);
@@ -480,21 +480,23 @@ DWORD WINAPI BackupThread(LPVOID lpParam) {
 
     wchar_t cmd[2048];
     // Execute Driver Export using PnPUtil first, fallback to DISM
-    // Do NOT put quotes around targetPath if there are no spaces! Windows 11 24H2 CLI parser treats quotes literally!
+    // NOTE: %ls is mandatory for wchar_t* args in wide printf — plain %s is read
+    // as a narrow string by the MinGW/MSVCRT CRT, truncating paths at the first
+    // null byte (e.g. "C:\Drivers" becomes "C") and making pnputil/DISM fail.
     AppendLog(L"调用 Windows 原生驱动导出引擎 (PnPUtil)...\r\n");
     if (wcschr(params->targetPath, L' ') != NULL) {
-        swprintf(cmd, 2048, L"pnputil.exe /export-driver * \"%s\"", params->targetPath);
+        swprintf(cmd, 2048, L"pnputil.exe /export-driver * \"%ls\"", params->targetPath);
     } else {
-        swprintf(cmd, 2048, L"pnputil.exe /export-driver * %s", params->targetPath);
+        swprintf(cmd, 2048, L"pnputil.exe /export-driver * %ls", params->targetPath);
     }
 
     DWORD ec = RunProcessWithPipe(cmd);
     if (ec != 0) {
         AppendLog(L"\r\nPnPUtil 未完成，切换备用 DISM 引擎导出...\r\n");
         if (wcschr(params->targetPath, L' ') != NULL) {
-            swprintf(cmd, 2048, L"dism.exe /online /export-driver \"/destination:%s\"", params->targetPath);
+            swprintf(cmd, 2048, L"dism.exe /online /export-driver \"/destination:%ls\"", params->targetPath);
         } else {
-            swprintf(cmd, 2048, L"dism.exe /online /export-driver /destination:%s", params->targetPath);
+            swprintf(cmd, 2048, L"dism.exe /online /export-driver /destination:%ls", params->targetPath);
         }
         ec = RunProcessWithPipe(cmd);
     }
