@@ -479,18 +479,22 @@ DWORD WINAPI BackupThread(LPVOID lpParam) {
     SHCreateDirectoryExW(NULL, params->targetPath, NULL);
 
     wchar_t cmd[2048];
-    // Crucial DISM fix:
-    // When quotes are placed after colon like /destination:"D:\XX", DISM's internal parser
-    // splits on the colon of "D:", causing it to parse the path as just "D"!
-    // If path contains no spaces, omit quotes entirely: /destination:D:\XX
-    // If path contains spaces, wrap the whole switch: "/destination:D:\My Path"
-    if (wcschr(params->targetPath, L' ') != NULL) {
-        swprintf(cmd, 2048, L"dism.exe /online /export-driver \"/destination:%s\"", params->targetPath);
-    } else {
-        swprintf(cmd, 2048, L"dism.exe /online /export-driver /destination:%s", params->targetPath);
-    }
+    // Execute Driver Export using PnPUtil first, fallback to DISM
+    // pnputil /export-driver * <target_dir>
+    // PnPUtil is significantly faster, native, and has zero path colon/quote bugs!
+    AppendLog(L"调用 Windows 原生驱动导出引擎 (PnPUtil)...\r\n");
+    swprintf(cmd, 2048, L"pnputil.exe /export-driver * \"%s\"", params->targetPath);
 
     DWORD ec = RunProcessWithPipe(cmd);
+    if (ec != 0) {
+        AppendLog(L"\r\nPnPUtil 未完成，切换备用 DISM 引擎导出...\r\n");
+        if (wcschr(params->targetPath, L' ') != NULL) {
+            swprintf(cmd, 2048, L"dism.exe /online /export-driver \"/destination:%s\"", params->targetPath);
+        } else {
+            swprintf(cmd, 2048, L"dism.exe /online /export-driver /destination:%s", params->targetPath);
+        }
+        ec = RunProcessWithPipe(cmd);
+    }
     if (ec == 0) {
         AppendLog(L"\r\n[成功] 驱动已顺利导出！\r\n");
         SetWindowTextW(g_hStatus, L"驱动备份完成！");
