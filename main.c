@@ -234,12 +234,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         SendMessageW(g_hBtnBrowse, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         // Action Buttons
-        g_hBtnBackup = CreateWindowW(L"BUTTON", L"💾 一键备份驱动", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            160, 60, 180, 36, hWnd, (HMENU)ID_BTN_BACKUP, NULL, NULL);
+        g_hBtnBackup = CreateWindowW(L"BUTTON", L"💾 一键备份当前系统驱动", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            160, 60, 220, 36, hWnd, (HMENU)ID_BTN_BACKUP, NULL, NULL);
         SendMessageW(g_hBtnBackup, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        g_hBtnRestore = CreateWindowW(L"BUTTON", L"⚡ 一键还原驱动", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            360, 60, 180, 36, hWnd, (HMENU)ID_BTN_RESTORE, NULL, NULL);
+        g_hBtnRestore = CreateWindowW(L"BUTTON", L"⚡ 一键批量安装驱动", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            400, 60, 180, 36, hWnd, (HMENU)ID_BTN_RESTORE, NULL, NULL);
         SendMessageW(g_hBtnRestore, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         // Progress bar
@@ -262,8 +262,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         AppendLog(L"欢迎使用 Windows 原生硬件驱动备份与还原工具。\r\n");
         AppendLog(L"基于 Win32 API 与微软原生 DISM/PnPUtil 引擎开发，绿色免安装。\r\n");
         AppendLog(L"--------------------------------------------------\r\n");
-        AppendLog(L"• 备份：自动提取当前系统所有非微软官方的第三方硬件驱动(.inf/.sys/.cat)\r\n");
-        AppendLog(L"• 还原：自动递归扫描指定目录并静默注入全部硬件设备驱动\r\n\r\n");
+        AppendLog(L"• 备份：一键将当前系统的所有第三方硬件驱动导出为干净的 INF/SYS/CAT 原始安装包。\r\n");
+        AppendLog(L"• 新系统使用方式：\r\n");
+        AppendLog(L"  1. 方式一（系统自带推荐）：在【设备管理器】中对带黄色感叹号的设备右键 ->【更新驱动程序】->【浏览我的电脑以查找驱动程序】，直接选中备份文件夹并勾选【包含子文件夹】，Windows 会全自动识别并匹配最合适的驱动！\r\n");
+        AppendLog(L"  2. 方式二（全自动一键安装）：点击本程序的【一键批量安装驱动】按钮，自动扫描并静默安装该目录下所有驱动。\r\n\r\n");
         break;
     }
     case WM_COMMAND: {
