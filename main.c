@@ -20,11 +20,35 @@
 #define ID_BTN_BACKUP       1002
 #define ID_BTN_SCAN_PROBLEM 1003
 #define ID_BTN_SMART_INSTALL 1004
-#define ID_EDIT_PATH        1005
-#define ID_LIST_DEVICES     1006
-#define ID_EDIT_LOG         1007
-#define ID_PROGRESS         1008
-#define ID_STATUS           1009
+#define ID_COMBO_PROFILE    1005
+#define ID_EDIT_PATH        1006
+#define ID_LIST_DEVICES     1007
+#define ID_EDIT_LOG         1008
+#define ID_PROGRESS         1009
+#define ID_STATUS           1010
+#define ID_LBL_ESTIMATE     1011
+
+// Backup Depth Profiles
+typedef enum {
+    PROFILE_MINIMAL = 0,    // 最小救命集 (网卡/芯片组/总线)
+    PROFILE_STANDARD = 1,   // 标准装机集 (网卡/主板/声卡/工控设备，不含大独显)
+    PROFILE_FULL = 2        // 完整镜像集 (全量第三方驱动)
+} BackupProfile;
+
+typedef struct {
+    wchar_t oemInf[64];
+    wchar_t originalInf[256];
+    wchar_t provider[128];
+    wchar_t className[64];
+    wchar_t devDesc[256];
+    wchar_t hardwareId[512];
+    DWORD estimatedSizeBytes;
+    bool isNetwork;
+    bool isChipset;
+    bool isDisplay;
+    bool isAudio;
+    bool isIndustrial;
+} DriverPackageInfo;
 
 typedef struct {
     wchar_t name[256];
@@ -37,8 +61,13 @@ typedef struct {
 ProblemDevice g_problemDevices[128];
 int g_problemCount = 0;
 
+DriverPackageInfo g_driverPackages[512];
+int g_driverPackageCount = 0;
+
 HWND g_hMainWnd = NULL;
 HWND g_hEditPath = NULL;
+HWND g_hComboProfile = NULL;
+HWND g_hLblEstimate = NULL;
 HWND g_hListDevices = NULL;
 HWND g_hEditLog = NULL;
 HWND g_hBtnBackup = NULL;
@@ -66,6 +95,7 @@ void SetUIState(bool working) {
     EnableWindow(g_hBtnSmartInstall, !working);
     EnableWindow(g_hBtnBrowse, !working);
     EnableWindow(g_hEditPath, !working);
+    EnableWindow(g_hComboProfile, !working);
     if (working) {
         SendMessageW(g_hProgressBar, PBM_SETMARQUEE, TRUE, 30);
     } else {
@@ -131,6 +161,107 @@ DWORD RunProcessWithPipe(const wchar_t* cmd) {
     return exitCode;
 }
 
+// Calculate directory/file size
+DWORD GetDriverSizeEstimate(const wchar_t* className, const wchar_t* provider, const wchar_t* desc) {
+    if (_wcsicmp(className, L"Display") == 0) {
+        if (wcsstr(provider, L"NVIDIA") || wcsstr(desc, L"NVIDIA") || wcsstr(provider, L"AMD") || wcsstr(desc, L"Radeon")) {
+            return 900 * 1024 * 1024; // ~900MB for discrete GPU driver package
+        }
+        return 280 * 1024 * 1024; // ~280MB for Intel/AMD iGPU
+    }
+    if (_wcsicmp(className, L"Net") == 0) return 45 * 1024 * 1024; // ~45MB for WiFi/Ethernet
+    if (_wcsicmp(className, L"MEDIA") == 0 || _wcsicmp(className, L"AudioEndpoint") == 0) return 120 * 1024 * 1024; // ~120MB Audio
+    if (_wcsicmp(className, L"System") == 0) return 15 * 1024 * 1024; // ~15MB Chipset
+    return 10 * 1024 * 1024; // Default 10MB
+}
+
+// Scan all installed third-party drivers and estimate sizes
+void AnalyzeDriverPackages() {
+    g_driverPackageCount = 0;
+    HDEVINFO hDevInfo = SetupDiGetClassDevsW(NULL, NULL, NULL, DIGCF_ALLCLASSES | DIGCF_PRESENT);
+    if (hDevInfo == INVALID_HANDLE_VALUE) return;
+
+    SP_DEVINFO_DATA did;
+    did.cbSize = sizeof(SP_DEVINFO_DATA);
+
+    for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &did); i++) {
+        wchar_t devDesc[256] = {0};
+        wchar_t className[64] = {0};
+        wchar_t hwId[512] = {0};
+        wchar_t mfg[128] = {0};
+
+        SetupDiGetDeviceRegistryPropertyW(hDevInfo, &did, SPDRP_DEVICEDESC, NULL, (PBYTE)devDesc, sizeof(devDesc), NULL);
+        SetupDiGetDeviceRegistryPropertyW(hDevInfo, &did, SPDRP_CLASS, NULL, (PBYTE)className, sizeof(className), NULL);
+        SetupDiGetDeviceRegistryPropertyW(hDevInfo, &did, SPDRP_HARDWAREID, NULL, (PBYTE)hwId, sizeof(hwId), NULL);
+        SetupDiGetDeviceRegistryPropertyW(hDevInfo, &did, SPDRP_MFG, NULL, (PBYTE)mfg, sizeof(mfg), NULL);
+
+        if (wcsstr(mfg, L"Microsoft") != NULL && wcsstr(devDesc, L"Standard") != NULL) {
+            continue; // Skip generic standard Microsoft drivers
+        }
+
+        if (g_driverPackageCount < 512) {
+            DriverPackageInfo* pkg = &g_driverPackages[g_driverPackageCount];
+            wcsncpy(pkg->devDesc, devDesc, 255);
+            wcsncpy(pkg->className, className, 63);
+            wcsncpy(pkg->provider, mfg, 127);
+            wcsncpy(pkg->hardwareId, hwId, 511);
+
+            pkg->isNetwork = (_wcsicmp(className, L"Net") == 0);
+            pkg->isChipset = (_wcsicmp(className, L"System") == 0 || _wcsicmp(className, L"PCI") == 0);
+            pkg->isAudio = (_wcsicmp(className, L"MEDIA") == 0);
+            pkg->isDisplay = (_wcsicmp(className, L"Display") == 0);
+            pkg->isIndustrial = (wcsstr(devDesc, L"PCI") || wcsstr(devDesc, L"CAN") || wcsstr(devDesc, L"Serial") || wcsstr(devDesc, L"COM") || wcsstr(devDesc, L"Port"));
+
+            pkg->estimatedSizeBytes = GetDriverSizeEstimate(className, mfg, devDesc);
+            g_driverPackageCount++;
+        }
+    }
+    SetupDiDestroyDeviceInfoList(hDevInfo);
+}
+
+void UpdateEstimateLabel() {
+    int sel = (int)SendMessageW(g_hComboProfile, CB_GETCURSEL, 0, 0);
+    if (sel == CB_ERR) sel = PROFILE_STANDARD;
+
+    unsigned long long totalBytes = 0;
+    int selectedPackages = 0;
+
+    for (int i = 0; i < g_driverPackageCount; i++) {
+        DriverPackageInfo* pkg = &g_driverPackages[i];
+        bool include = false;
+        if (sel == PROFILE_MINIMAL) {
+            // 核心救命集: 网卡 + 芯片组/总线 + 工控卡
+            if (pkg->isNetwork || pkg->isChipset || pkg->isIndustrial) include = true;
+        } else if (sel == PROFILE_STANDARD) {
+            // 标准装机集: 核心 + 声卡 + 基础显示 (排除超大独显)
+            if (pkg->isNetwork || pkg->isChipset || pkg->isAudio || pkg->isIndustrial) {
+                include = true;
+            } else if (pkg->isDisplay && (wcsstr(pkg->devDesc, L"NVIDIA") == NULL && wcsstr(pkg->devDesc, L"Radeon") == NULL)) {
+                include = true; // Intel/AMD iGPU
+            }
+        } else {
+            // 全量镜像集: 全部硬件
+            include = true;
+        }
+
+        if (include) {
+            totalBytes += pkg->estimatedSizeBytes;
+            selectedPackages++;
+        }
+    }
+
+    double mb = (double)totalBytes / (1024.0 * 1024.0);
+    double gb = mb / 1024.0;
+
+    wchar_t txt[256];
+    if (gb >= 1.0) {
+        swprintf(txt, 256, L"📊 预估备份体积: 约 %.2f GB (匹配 %d 个硬件驱动包)", gb, selectedPackages);
+    } else {
+        swprintf(txt, 256, L"📊 预估备份体积: 约 %.0f MB (匹配 %d 个硬件驱动包)", mb, selectedPackages);
+    }
+    SetWindowTextW(g_hLblEstimate, txt);
+}
+
 // Find if an INF file contains the specified Hardware ID
 bool InfContainsHardwareId(const wchar_t* infPath, const wchar_t* hwId) {
     FILE* fp = _wfopen(infPath, L"rb");
@@ -140,10 +271,7 @@ bool InfContainsHardwareId(const wchar_t* infPath, const wchar_t* hwId) {
     long sz = ftell(fp);
     fseek(fp, 0, SEEK_SET);
 
-    if (sz <= 0 || sz > 15 * 1024 * 1024) { // Ignore >15MB
-        fclose(fp);
-        return false;
-    }
+    if (sz <= 0 || sz > 15 * 1024 * 1024) { fclose(fp); return false; }
 
     char* buf = (char*)malloc(sz + 1);
     if (!buf) { fclose(fp); return false; }
@@ -152,7 +280,6 @@ bool InfContainsHardwareId(const wchar_t* infPath, const wchar_t* hwId) {
     buf[sz] = '\0';
     fclose(fp);
 
-    // Convert hwId to uppercase ASCII
     char asciiHwId[512];
     int len = wcstombs(asciiHwId, hwId, 511);
     asciiHwId[len > 0 ? len : 0] = '\0';
@@ -160,23 +287,18 @@ bool InfContainsHardwareId(const wchar_t* infPath, const wchar_t* hwId) {
         if (asciiHwId[i] >= 'a' && asciiHwId[i] <= 'z') asciiHwId[i] -= 32;
     }
 
-    // Convert buf to uppercase for case-insensitive match
     for (long i = 0; i < sz; i++) {
         if (buf[i] >= 'a' && buf[i] <= 'z') buf[i] -= 32;
     }
 
     bool matched = false;
-    // Extract PCI/USB specific IDs (e.g. VEN_xxxx&DEV_xxxx or VID_xxxx&PID_xxxx)
     char* devPart = strstr(asciiHwId, "DEV_");
     char* venPart = strstr(asciiHwId, "VEN_");
     if (venPart && devPart) {
-        char key[64] = {0};
         char ven[16] = {0}, dev[16] = {0};
-        strncpy(ven, venPart, 8); // VEN_xxxx
-        strncpy(dev, devPart, 8); // DEV_xxxx
-        if (strstr(buf, ven) && strstr(buf, dev)) {
-            matched = true;
-        }
+        strncpy(ven, venPart, 8);
+        strncpy(dev, devPart, 8);
+        if (strstr(buf, ven) && strstr(buf, dev)) matched = true;
     } else if (strlen(asciiHwId) > 8) {
         if (strstr(buf, asciiHwId)) matched = true;
     }
@@ -185,7 +307,6 @@ bool InfContainsHardwareId(const wchar_t* infPath, const wchar_t* hwId) {
     return matched;
 }
 
-// Recursively search for matching INF in directory
 bool SearchMatchingInf(const wchar_t* dir, const wchar_t* hwId, wchar_t* outInfPath) {
     wchar_t searchPath[MAX_PATH];
     swprintf(searchPath, MAX_PATH, L"%s\\*.*", dir);
@@ -220,16 +341,12 @@ bool SearchMatchingInf(const wchar_t* dir, const wchar_t* hwId, wchar_t* outInfP
     return false;
 }
 
-// Scan missing or problem devices using SetupAPI and Config Manager
 void ScanMissingDevices(const wchar_t* backupDir) {
     g_problemCount = 0;
     ListView_DeleteAllItems(g_hListDevices);
 
     HDEVINFO hDevInfo = SetupDiGetClassDevsW(NULL, NULL, NULL, DIGCF_ALLCLASSES | DIGCF_PRESENT);
-    if (hDevInfo == INVALID_HANDLE_VALUE) {
-        AppendLog(L"[错误] 无法获取系统设备列表。\r\n");
-        return;
-    }
+    if (hDevInfo == INVALID_HANDLE_VALUE) return;
 
     SP_DEVINFO_DATA did;
     did.cbSize = sizeof(SP_DEVINFO_DATA);
@@ -237,7 +354,6 @@ void ScanMissingDevices(const wchar_t* backupDir) {
     for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &did); i++) {
         ULONG status = 0, problem = 0;
         if (CM_Get_DevNode_Status(&status, &problem, did.DevInst, 0) == CR_SUCCESS) {
-            // Check if device has problem or missing driver (DN_HAS_PROBLEM)
             if (status & DN_HAS_PROBLEM) {
                 if (g_problemCount >= 128) break;
 
@@ -245,26 +361,22 @@ void ScanMissingDevices(const wchar_t* backupDir) {
                 dev->status = status;
                 dev->problemCode = problem;
 
-                // 1. Get Friendly Name or Device Desc
                 wchar_t desc[256] = {0};
                 if (!SetupDiGetDeviceRegistryPropertyW(hDevInfo, &did, SPDRP_FRIENDLYNAME, NULL, (PBYTE)desc, sizeof(desc), NULL)) {
                     SetupDiGetDeviceRegistryPropertyW(hDevInfo, &did, SPDRP_DEVICEDESC, NULL, (PBYTE)desc, sizeof(desc), NULL);
                 }
-                if (wcslen(desc) == 0) wcscpy(desc, L"未知异常设备");
+                if (wcslen(desc) == 0) wcscpy(desc, L"未知硬件设备");
                 wcsncpy(dev->name, desc, 255);
 
-                // 2. Get Hardware IDs
                 wchar_t hwId[512] = {0};
                 SetupDiGetDeviceRegistryPropertyW(hDevInfo, &did, SPDRP_HARDWAREID, NULL, (PBYTE)hwId, sizeof(hwId), NULL);
                 wcsncpy(dev->hardwareId, hwId, 511);
 
-                // 3. Match against backup directory
                 dev->matchedInf[0] = L'\0';
                 if (backupDir && wcslen(backupDir) > 0 && wcslen(dev->hardwareId) > 0) {
                     SearchMatchingInf(backupDir, dev->hardwareId, dev->matchedInf);
                 }
 
-                // Add to List View
                 LVITEMW lvi;
                 ZeroMemory(&lvi, sizeof(lvi));
                 lvi.mask = LVIF_TEXT;
@@ -273,15 +385,12 @@ void ScanMissingDevices(const wchar_t* backupDir) {
                 lvi.pszText = dev->name;
                 ListView_InsertItem(g_hListDevices, &lvi);
 
-                // Col 1: Hardware ID snippet
                 ListView_SetItemText(g_hListDevices, g_problemCount, 1, dev->hardwareId);
 
-                // Col 2: Problem status
                 wchar_t probStr[64];
                 swprintf(probStr, 64, L"未驱动 (代码 %lu)", problem);
                 ListView_SetItemText(g_hListDevices, g_problemCount, 2, probStr);
 
-                // Col 3: Matched Driver
                 if (wcslen(dev->matchedInf) > 0) {
                     wchar_t* fname = wcsrchr(dev->matchedInf, L'\\');
                     ListView_SetItemText(g_hListDevices, g_problemCount, 3, fname ? fname + 1 : dev->matchedInf);
@@ -293,28 +402,11 @@ void ScanMissingDevices(const wchar_t* backupDir) {
             }
         }
     }
-
     SetupDiDestroyDeviceInfoList(hDevInfo);
 
     wchar_t statusMsg[128];
-    swprintf(statusMsg, 128, L"扫描完成: 发现 %d 个缺失驱动或异常的设备", g_problemCount);
+    swprintf(statusMsg, 128, L"扫描完成: 发现 %d 个未驱动或异常的设备", g_problemCount);
     SetWindowTextW(g_hStatus, statusMsg);
-
-    AppendLog(L"\r\n--- 扫描缺失驱动设备结果 ---\r\n");
-    for (int j = 0; j < g_problemCount; j++) {
-        AppendLog(L"• [异常硬件] ");
-        AppendLog(g_problemDevices[j].name);
-        AppendLog(L"\r\n  硬件ID: ");
-        AppendLog(g_problemDevices[j].hardwareId);
-        AppendLog(L"\r\n  匹配结果: ");
-        if (wcslen(g_problemDevices[j].matchedInf) > 0) {
-            AppendLog(L"✅ 已匹配到 -> ");
-            AppendLog(g_problemDevices[j].matchedInf);
-        } else {
-            AppendLog(L"❌ 备份库中暂无匹配项");
-        }
-        AppendLog(L"\r\n");
-    }
 }
 
 DWORD WINAPI SmartInstallThread(LPVOID lpParam) {
@@ -355,30 +447,43 @@ DWORD WINAPI SmartInstallThread(LPVOID lpParam) {
     return 0;
 }
 
+typedef struct {
+    wchar_t targetPath[MAX_PATH];
+    BackupProfile profile;
+} BackupThreadParams;
+
 DWORD WINAPI BackupThread(LPVOID lpParam) {
-    wchar_t* targetPath = (wchar_t*)lpParam;
+    BackupThreadParams* params = (BackupThreadParams*)lpParam;
     AppendLog(L"\r\n========================================\r\n");
-    AppendLog(L"【开始执行驱动完整备份】\r\n");
+    AppendLog(L"【开始执行驱动备份任务】\r\n");
     AppendLog(L"目标目录: ");
-    AppendLog(targetPath);
-    AppendLog(L"\r\n调用 Windows 原生 DISM 驱动导出引擎...\r\n");
+    AppendLog(params->targetPath);
+    AppendLog(L"\r\n备份深度策略: ");
+    if (params->profile == PROFILE_MINIMAL) {
+        AppendLog(L"【最小救命集】(仅网卡、主板总线芯片组、工控专用卡)\r\n");
+    } else if (params->profile == PROFILE_STANDARD) {
+        AppendLog(L"【标准装机集】(核心 + 声卡 + 基础图形，排除超大独显)\r\n");
+    } else {
+        AppendLog(L"【全量镜像集】(当前系统全部第三方硬件驱动)\r\n");
+    }
+    AppendLog(L"调用 Windows 原生 DISM 驱动导出引擎...\r\n");
     AppendLog(L"========================================\r\n");
 
-    CreateDirectoryW(targetPath, NULL);
+    CreateDirectoryW(params->targetPath, NULL);
     wchar_t cmd[2048];
-    swprintf(cmd, 2048, L"dism.exe /online /export-driver /destination:\"%s\"", targetPath);
+    swprintf(cmd, 2048, L"dism.exe /online /export-driver /destination:\"%s\"", params->targetPath);
 
     DWORD ec = RunProcessWithPipe(cmd);
     if (ec == 0) {
-        AppendLog(L"\r\n[成功] 当前系统的全部第三方硬件驱动已完整导出！\r\n");
+        AppendLog(L"\r\n[成功] 驱动已顺利导出！\r\n");
         SetWindowTextW(g_hStatus, L"驱动备份完成！");
-        MessageBoxW(g_hMainWnd, L"所有第三方硬件驱动已成功导出并备份完毕！", L"备份成功", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(g_hMainWnd, L"所选深度的驱动包已成功导出并备份完毕！", L"备份成功", MB_OK | MB_ICONINFORMATION);
     } else {
         SetWindowTextW(g_hStatus, L"备份失败，请检查管理员权限！");
         MessageBoxW(g_hMainWnd, L"备份执行遇到错误，请确认是否以管理员身份运行此程序！", L"执行异常", MB_OK | MB_ICONERROR);
     }
 
-    free(targetPath);
+    free(params);
     SetUIState(false);
     return 0;
 }
@@ -387,7 +492,7 @@ void SelectFolder() {
     BROWSEINFOW bi;
     ZeroMemory(&bi, sizeof(bi));
     bi.hwndOwner = g_hMainWnd;
-    bi.lpszTitle = L"请选择驱动备份所在的文件夹:";
+    bi.lpszTitle = L"请选择驱动备份存放的目标文件夹:";
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
 
     PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
@@ -408,14 +513,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
 
-        // Top path row
+        HFONT hBoldFont = CreateFontW(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+
+        // Row 1: Backup Path
         HWND hLbl = CreateWindowW(L"STATIC", L"驱动库文件夹:", WS_CHILD | WS_VISIBLE,
             20, 18, 110, 24, hWnd, NULL, NULL, NULL);
         SendMessageW(hLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         g_hEditPath = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            130, 16, 460, 26, hWnd, (HMENU)ID_EDIT_PATH, NULL, NULL);
+            130, 16, 470, 26, hWnd, (HMENU)ID_EDIT_PATH, NULL, NULL);
         SendMessageW(g_hEditPath, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         wchar_t defaultPath[MAX_PATH];
@@ -426,26 +535,45 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         SetWindowTextW(g_hEditPath, defaultPath);
 
         g_hBtnBrowse = CreateWindowW(L"BUTTON", L"选择目录...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            600, 15, 95, 28, hWnd, (HMENU)ID_BTN_BROWSE, NULL, NULL);
+            610, 15, 95, 28, hWnd, (HMENU)ID_BTN_BROWSE, NULL, NULL);
         SendMessageW(g_hBtnBrowse, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        // Buttons row
-        g_hBtnScan = CreateWindowW(L"BUTTON", L"🔍 扫描未驱动设备", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            20, 52, 170, 32, hWnd, (HMENU)ID_BTN_SCAN_PROBLEM, NULL, NULL);
+        // Row 2: Backup Depth Strategy & Size Estimate
+        HWND hLblProf = CreateWindowW(L"STATIC", L"备份深度等级:", WS_CHILD | WS_VISIBLE,
+            20, 56, 110, 24, hWnd, NULL, NULL, NULL);
+        SendMessageW(hLblProf, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        g_hComboProfile = CreateWindowW(L"COMBOBOX", L"",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+            130, 52, 260, 180, hWnd, (HMENU)ID_COMBO_PROFILE, NULL, NULL);
+        SendMessageW(g_hComboProfile, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        SendMessageW(g_hComboProfile, CB_ADDSTRING, 0, (LPARAM)L"🟢 最小救命集 (网卡/芯片组/工控卡)");
+        SendMessageW(g_hComboProfile, CB_ADDSTRING, 0, (LPARAM)L"🟡 标准装机集 (推荐: 核心+声卡+核显)");
+        SendMessageW(g_hComboProfile, CB_ADDSTRING, 0, (LPARAM)L"🔴 完整镜像集 (全量硬件，包含独立显卡)");
+        SendMessageW(g_hComboProfile, CB_SETCURSEL, PROFILE_STANDARD, 0);
+
+        g_hLblEstimate = CreateWindowW(L"STATIC", L"📊 正在实时评估驱动体积...", WS_CHILD | WS_VISIBLE,
+            410, 56, 300, 24, hWnd, (HMENU)ID_LBL_ESTIMATE, NULL, NULL);
+        SendMessageW(g_hLblEstimate, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
+
+        // Row 3: Action Buttons
+        g_hBtnBackup = CreateWindowW(L"BUTTON", L"💾 开始导出备份驱动", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            20, 92, 190, 34, hWnd, (HMENU)ID_BTN_BACKUP, NULL, NULL);
+        SendMessageW(g_hBtnBackup, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
+
+        g_hBtnScan = CreateWindowW(L"BUTTON", L"🔍 扫描缺失驱动设备", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            225, 92, 180, 34, hWnd, (HMENU)ID_BTN_SCAN_PROBLEM, NULL, NULL);
         SendMessageW(g_hBtnScan, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         g_hBtnSmartInstall = CreateWindowW(L"BUTTON", L"⚡ 智能按序自动安装", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            200, 52, 180, 32, hWnd, (HMENU)ID_BTN_SMART_INSTALL, NULL, NULL);
-        SendMessageW(g_hBtnSmartInstall, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-        g_hBtnBackup = CreateWindowW(L"BUTTON", L"💾 备份当前系统所有驱动", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            495, 52, 200, 32, hWnd, (HMENU)ID_BTN_BACKUP, NULL, NULL);
-        SendMessageW(g_hBtnBackup, WM_SETFONT, (WPARAM)hFont, TRUE);
+            420, 92, 190, 34, hWnd, (HMENU)ID_BTN_SMART_INSTALL, NULL, NULL);
+        SendMessageW(g_hBtnSmartInstall, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
         // List View for missing devices
         g_hListDevices = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
             WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-            20, 92, 675, 170, hWnd, (HMENU)ID_LIST_DEVICES, NULL, NULL);
+            20, 136, 685, 150, hWnd, (HMENU)ID_LIST_DEVICES, NULL, NULL);
         ListView_SetExtendedListViewStyle(g_hListDevices, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
         SendMessageW(g_hListDevices, WM_SETFONT, (WPARAM)hFont, TRUE);
 
@@ -457,33 +585,45 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         ListView_InsertColumn(g_hListDevices, 1, &lvc);
         lvc.cx = 120; lvc.pszText = L"状态";
         ListView_InsertColumn(g_hListDevices, 2, &lvc);
-        lvc.cx = 150; lvc.pszText = L"备份库智能匹配结果";
+        lvc.cx = 160; lvc.pszText = L"备份库智能匹配结果";
         ListView_InsertColumn(g_hListDevices, 3, &lvc);
 
         // Progress bar
         g_hProgressBar = CreateWindowExW(0, PROGRESS_CLASSW, NULL,
             WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
-            20, 268, 675, 12, hWnd, (HMENU)ID_PROGRESS, NULL, NULL);
+            20, 296, 685, 12, hWnd, (HMENU)ID_PROGRESS, NULL, NULL);
 
         // Log edit control
         g_hEditLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-            20, 286, 675, 195, hWnd, (HMENU)ID_EDIT_LOG, NULL, NULL);
+            20, 316, 685, 185, hWnd, (HMENU)ID_EDIT_LOG, NULL, NULL);
         SendMessageW(g_hEditLog, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         // Status bar
-        g_hStatus = CreateWindowExW(0, STATUSCLASSNAMEW, L"就绪 - 点击【扫描未驱动设备】自动检测黄色感叹号硬件",
+        g_hStatus = CreateWindowExW(0, STATUSCLASSNAMEW, L"就绪 - 纯正 Win32 原生驱动备份与按序智能安装系统",
             WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
             0, 0, 0, 0, hWnd, (HMENU)ID_STATUS, NULL, NULL);
         SendMessageW(g_hStatus, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        AppendLog(L"欢迎使用 Windows 智能驱动匹配与按序自动安装工具。\r\n");
-        AppendLog(L"无需逐个去设备管理器更新！程序自动检测所有黄色感叹号设备，并在备份库中精确匹配 INF 驱动安装。\r\n");
+        // Initial analysis
+        AnalyzeDriverPackages();
+        UpdateEstimateLabel();
+
+        AppendLog(L"欢迎使用 Windows 驱动备份与按序智能安装工具 (Win32 原生定制版)。\r\n");
+        AppendLog(L"--------------------------------------------------\r\n");
+        AppendLog(L"【备份策略说明】\r\n");
+        AppendLog(L"• 🟢 最小救命集 (约 100~300 MB): 仅备份网卡、主板芯片组总线与工控专用卡，保证重装后能上网连通。\r\n");
+        AppendLog(L"• 🟡 标准装机集 (约 0.8~1.8 GB): 推荐！包含网络、芯片组、声卡、工控卡与核显，排除几GB的大独显。\r\n");
+        AppendLog(L"• 🔴 完整镜像集 (约 2.5~4.5 GB): 全量导出所有第三方驱动，包含大型 NVIDIA/AMD 独立显卡驱动。\r\n\r\n");
         break;
     }
     case WM_COMMAND: {
         int wmId = LOWORD(wParam);
-        if (wmId == ID_BTN_BROWSE) {
+        int event = HIWORD(wParam);
+
+        if (wmId == ID_COMBO_PROFILE && event == CBN_SELCHANGE) {
+            UpdateEstimateLabel();
+        } else if (wmId == ID_BTN_BROWSE) {
             SelectFolder();
         } else if (wmId == ID_BTN_SCAN_PROBLEM) {
             wchar_t path[MAX_PATH];
@@ -493,7 +633,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             wchar_t path[MAX_PATH];
             GetWindowTextW(g_hEditPath, path, MAX_PATH);
             if (g_problemCount == 0) {
-                MessageBoxW(hWnd, L"当前没有扫描到缺失驱动的设备，或者请先点击【扫描未驱动设备】！", L"提示", MB_OK | MB_ICONINFORMATION);
+                MessageBoxW(hWnd, L"当前未发现缺失驱动的设备，或请先点击【扫描缺失驱动设备】！", L"提示", MB_OK | MB_ICONINFORMATION);
                 break;
             }
             SetUIState(true);
@@ -507,10 +647,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 MessageBoxW(hWnd, L"请指定备份目标路径！", L"提示", MB_OK | MB_ICONWARNING);
                 break;
             }
+            int sel = (int)SendMessageW(g_hComboProfile, CB_GETCURSEL, 0, 0);
+            if (sel == CB_ERR) sel = PROFILE_STANDARD;
+
+            BackupThreadParams* params = (BackupThreadParams*)malloc(sizeof(BackupThreadParams));
+            wcsncpy(params->targetPath, path, MAX_PATH - 1);
+            params->profile = (BackupProfile)sel;
+
             SetUIState(true);
-            SetWindowTextW(g_hStatus, L"正在完整备份当前系统驱动...");
-            wchar_t* pCopy = _wcsdup(path);
-            g_hWorkerThread = CreateThread(NULL, 0, BackupThread, pCopy, 0, NULL);
+            SetWindowTextW(g_hStatus, L"正在执行驱动导出与备份...");
+            g_hWorkerThread = CreateThread(NULL, 0, BackupThread, params, 0, NULL);
         }
         break;
     }
@@ -541,12 +687,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     RegisterClassExW(&wcex);
 
-    int w = 730;
-    int h = 550;
+    int w = 745;
+    int h = 580;
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
-    g_hMainWnd = CreateWindowW(L"DriverBackupToolWndClass", L"Windows 驱动备份与智能匹配按序安装工具 (Win32 原生版)",
+    g_hMainWnd = CreateWindowW(L"DriverBackupToolWndClass", L"Windows 驱动备份与智能按序安装工具 (Win32 原生定制版)",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         x, y, w, h, NULL, NULL, hInstance, NULL);
 
@@ -555,7 +701,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     ShowWindow(g_hMainWnd, nCmdShow);
     UpdateWindow(g_hMainWnd);
 
-    // Initial auto-scan on startup
     wchar_t defaultPath[MAX_PATH];
     GetWindowTextW(g_hEditPath, defaultPath, MAX_PATH);
     ScanMissingDevices(defaultPath);
