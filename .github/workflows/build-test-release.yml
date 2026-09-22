@@ -28,7 +28,7 @@ jobs:
 
       - name: Build DriverBackupTool.exe and DriverTestCLI.exe
         run: |
-          x86_64-w64-mingw32-gcc -O2 -municode -mwindows main.c app.res -o DriverBackupTool.exe -lcomctl32 -lshell32 -lole32 -lsetupapi -lcfgmgr32
+          x86_64-w64-mingw32-gcc -O2 -municode -mwindows main.c app.res -o DriverBackupTool.exe -lcomctl32 -lshell32 -lole32 -luuid -lsetupapi -lcfgmgr32
           x86_64-w64-mingw32-gcc -O2 -municode cli_main.c app.res -o DriverTestCLI.exe -lshell32 -lole32
 
       - name: Test Binary Headers & Exported Subsystems

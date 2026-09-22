@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <setupapi.h>
 #include <cfgmgr32.h>
 #include <stdio.h>
@@ -15,6 +16,7 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "uuid.lib")
 
 #define ID_BTN_BROWSE       1001
 #define ID_BTN_BACKUP       1002
@@ -515,20 +517,57 @@ DWORD WINAPI BackupThread(LPVOID lpParam) {
 }
 
 void SelectFolder() {
-    BROWSEINFOW bi;
-    ZeroMemory(&bi, sizeof(bi));
-    bi.hwndOwner = g_hMainWnd;
-    bi.lpszTitle = L"请选择驱动备份存放的目标文件夹:";
-    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    wchar_t selectedPath[MAX_PATH] = {0};
+    bool picked = false;
 
-    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
-    if (pidl) {
-        wchar_t path[MAX_PATH];
-        if (SHGetPathFromIDListW(pidl, path)) {
-            SetWindowTextW(g_hEditPath, path);
-            ScanMissingDevices(path);
+    // Modern Common Item Dialog (IFileOpenDialog with FOS_PICKFOLDERS)
+    IFileOpenDialog *pfd = NULL;
+    HRESULT hr = CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileOpenDialog, (void**)&pfd);
+    if (SUCCEEDED(hr) && pfd) {
+        DWORD dwFlags = 0;
+        pfd->lpVtbl->GetOptions(pfd, &dwFlags);
+        pfd->lpVtbl->SetOptions(pfd, dwFlags | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        pfd->lpVtbl->SetTitle(pfd, L"请选择驱动备份存放的目标文件夹:");
+
+        hr = pfd->lpVtbl->Show(pfd, g_hMainWnd);
+        if (SUCCEEDED(hr)) {
+            IShellItem *psi = NULL;
+            hr = pfd->lpVtbl->GetResult(pfd, &psi);
+            if (SUCCEEDED(hr) && psi) {
+                PWSTR pszFilePath = NULL;
+                hr = psi->lpVtbl->GetDisplayName(psi, SIGDN_FILESYSPATH, &pszFilePath);
+                if (SUCCEEDED(hr) && pszFilePath) {
+                    wcsncpy(selectedPath, pszFilePath, MAX_PATH - 1);
+                    selectedPath[MAX_PATH - 1] = L'\0';
+                    CoTaskMemFree(pszFilePath);
+                    picked = true;
+                }
+                psi->lpVtbl->Release(psi);
+            }
         }
-        CoTaskMemFree(pidl);
+        pfd->lpVtbl->Release(pfd);
+    }
+
+    // Fallback to legacy SHBrowseForFolderW only if modern COM dialog fails
+    if (!picked && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+        BROWSEINFOW bi;
+        ZeroMemory(&bi, sizeof(bi));
+        bi.hwndOwner = g_hMainWnd;
+        bi.lpszTitle = L"请选择驱动备份存放的目标文件夹:";
+        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+
+        PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+        if (pidl) {
+            if (SHGetPathFromIDListW(pidl, selectedPath)) {
+                picked = true;
+            }
+            CoTaskMemFree(pidl);
+        }
+    }
+
+    if (picked && wcslen(selectedPath) > 0) {
+        SetWindowTextW(g_hEditPath, selectedPath);
+        ScanMissingDevices(selectedPath);
     }
 }
 
@@ -696,6 +735,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
     INITCOMMONCONTROLSEX icex;
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
     icex.dwICC = ICC_PROGRESS_CLASS | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES;
